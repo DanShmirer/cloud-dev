@@ -1,0 +1,4 @@
+appName: hw-server
+image: hw-server
+tag: 0.0.1
+serverPort: 4565

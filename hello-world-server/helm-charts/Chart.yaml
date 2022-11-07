@@ -1,0 +1,6 @@
+apiVersion: v1
+appVersion: N/A
+description: Helm-charts of Hello World server
+name: hw-server
+type: application
+version: 0.1.0
