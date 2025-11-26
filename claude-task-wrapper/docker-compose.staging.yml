@@ -1,0 +1,48 @@
+# Docker Compose Staging Configuration
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.staging.yml up
+
+version: '3.8'
+
+services:
+  redis:
+    # Use Redis with password in staging
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+
+  api:
+    environment:
+      - ENVIRONMENT=staging
+      - LOG_LEVEL=INFO
+      # Load from staging env file
+    env_file:
+      - ./config/.env.staging
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  worker:
+    environment:
+      - ENVIRONMENT=staging
+      - LOG_LEVEL=INFO
+    env_file:
+      - ./config/.env.staging
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  # Enable OpenTelemetry Collector in staging
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics
+    restart: unless-stopped

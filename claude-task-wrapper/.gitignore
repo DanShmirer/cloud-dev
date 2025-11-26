@@ -1,6 +1,17 @@
-# Environment
+# Environment files (NEVER commit actual credentials)
 .env
 .env.local
+.env.development
+.env.staging
+.env.production
+config/.env.*
+!config/env.*.example
+
+# Secrets
+*.pem
+*.key
+secrets/
+credentials.json
 
 # Python
 __pycache__/

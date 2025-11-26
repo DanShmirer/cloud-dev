@@ -1,0 +1,26 @@
+# Docker Compose Override for Development
+# This file is automatically merged with docker-compose.yml
+# Use for local development settings
+
+version: '3.8'
+
+services:
+  api:
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - CORS_ORIGINS=*
+    volumes:
+      # Mount source for hot reloading
+      - ./api:/app/api:ro
+      - ./shared:/app/shared:ro
+
+  worker:
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+    volumes:
+      # Mount source for hot reloading
+      - ./worker:/app/worker:ro
+      - ./shared:/app/shared:ro
+      - ./environments:/app/environments:ro

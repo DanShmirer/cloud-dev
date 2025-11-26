@@ -1,0 +1,137 @@
+# OpenTelemetry Collector Configuration
+# Receives telemetry from Claude Task Wrapper and Claude Code CLI
+# Exports to configured backends
+
+receivers:
+  # OTLP receiver for gRPC and HTTP
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Prometheus scraper for self-monitoring
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector'
+          scrape_interval: 10s
+          static_configs:
+            - targets: ['localhost:8888']
+
+processors:
+  # Batch processor for efficient export
+  batch:
+    timeout: 10s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  # Resource processor for consistent labeling
+  resource:
+    attributes:
+      - key: service.namespace
+        value: claude-task-wrapper
+        action: upsert
+      - key: deployment.environment
+        from_attribute: environment
+        action: upsert
+
+  # Attributes processor for sensitive data handling
+  attributes:
+    actions:
+      # Remove potentially sensitive attributes
+      - key: anthropic.api_key
+        action: delete
+      - key: http.request.header.authorization
+        action: delete
+      # Add service-level attributes
+      - key: telemetry.sdk.name
+        value: opentelemetry
+        action: upsert
+
+  # Filter processor to drop noisy spans
+  filter:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["http.target"] == "/health"'
+        - 'attributes["http.target"] == "/metrics"'
+
+exporters:
+  # Debug exporter (for development)
+  debug:
+    verbosity: detailed
+
+  # OTLP exporter for external backends
+  # Configure based on your observability backend
+  otlp/external:
+    endpoint: "${OTEL_BACKEND_ENDPOINT}"
+    headers:
+      # Add authentication headers for your backend
+      # x-honeycomb-team: "${HONEYCOMB_API_KEY}"
+      # DD-API-KEY: "${DATADOG_API_KEY}"
+    tls:
+      insecure: false
+
+  # Prometheus exporter for metrics
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: claude_task_wrapper
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Logging exporter for structured logs
+  logging:
+    loglevel: info
+
+extensions:
+  # Health check extension
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Performance profiler
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  # zPages for debugging
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter, resource, attributes, batch]
+      exporters: [debug, logging]
+      # For production, add: otlp/external
+
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus, debug]
+      # For production, add: otlp/external
+
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, attributes, batch]
+      exporters: [logging]
+      # For production, add: otlp/external
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888

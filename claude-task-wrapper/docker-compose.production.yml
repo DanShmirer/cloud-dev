@@ -1,0 +1,85 @@
+# Docker Compose Production Configuration
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.production.yml up
+#
+# IMPORTANT PRODUCTION NOTES:
+# - Use external secrets management (AWS Secrets Manager, Vault, etc.)
+# - Configure proper SSL/TLS termination
+# - Set up proper logging and monitoring
+# - Review resource limits for your workload
+# - Never expose Redis port externally
+
+version: '3.8'
+
+services:
+  redis:
+    # Use Redis with password and restricted memory
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD} --maxmemory 2gb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    # Don't expose ports externally in production
+    ports: []
+
+  api:
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=WARNING
+    env_file:
+      - ./config/.env.production
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=WARNING
+    env_file:
+      - ./config/.env.production
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # OpenTelemetry Collector for production
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP gRPC (localhost only)
+      - "127.0.0.1:8888:8888"   # Prometheus metrics (localhost only)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    restart: unless-stopped
