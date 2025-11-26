@@ -12,7 +12,10 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from shared.models import Task, TaskConfig, TaskType, TaskStatus, TaskPriority
+from shared.models import (
+    Task, TaskConfig, TaskType, TaskStatus, TaskPriority,
+    EnvironmentType, EnvironmentTask,
+)
 from shared.queue import RedisTaskQueue, RedisTaskStore, RedisSessionStore
 
 
@@ -70,6 +73,79 @@ class QueueStatsResponse(BaseModel):
     """Queue statistics response"""
     pending_tasks: int
     total_handlers: int
+
+
+# Environment-based task models
+class EnvironmentTaskRequest(BaseModel):
+    """Request for environment-based task execution"""
+    env_type: str = Field(..., description="Environment type (e.g., crash_analysis)")
+    inputs: Dict[str, Any] = Field(..., description="Environment-specific inputs")
+    additional_prompt: Optional[str] = Field(
+        default=None,
+        description="Additional instructions for the analysis",
+    )
+    priority: int = Field(default=5, ge=1, le=20, description="Task priority")
+    callback_url: Optional[str] = Field(
+        default=None,
+        description="Webhook URL for completion notification",
+    )
+
+
+class CrashAnalysisRequest(BaseModel):
+    """Convenience model for crash analysis tasks"""
+    repo_url: str = Field(..., description="Git repository URL")
+    backtrace: str = Field(..., description="Crash backtrace/stack trace")
+    commit_hash: Optional[str] = Field(
+        default=None,
+        description="Git commit hash where crash occurred",
+    )
+    branch: Optional[str] = Field(
+        default=None,
+        description="Git branch (if no commit_hash)",
+    )
+    logs: Optional[str] = Field(
+        default=None,
+        description="Application logs around crash time",
+    )
+    additional_context: Optional[str] = Field(
+        default=None,
+        description="Any additional context about the crash",
+    )
+    priority: int = Field(default=5, ge=1, le=20)
+    callback_url: Optional[str] = None
+
+
+class EnvironmentTaskResponse(BaseModel):
+    """Response for environment task submission"""
+    task_id: str
+    env_type: str
+    status: str
+    message: str
+    workspace_path: Optional[str] = None
+
+
+class EnvironmentTaskStatusResponse(BaseModel):
+    """Detailed status response for environment tasks"""
+    task_id: str
+    env_type: str
+    status: str
+    workspace_path: Optional[str] = None
+    step_results: Optional[List[Dict[str, Any]]] = None
+    final_analysis: Optional[str] = None
+    error: Optional[str] = None
+    total_duration_seconds: Optional[float] = None
+
+
+class EnvironmentInfoResponse(BaseModel):
+    """Information about an available environment"""
+    type: str
+    name: str
+    description: str
+    required_inputs: List[str]
+
+
+# Import Dict and Any for type hints
+from typing import Dict, Any
 
 
 # Global state
@@ -339,6 +415,245 @@ async def continue_session(task_id: str, request: TaskRequest):
         status="queued",
         message=f"Session continuation queued (session: {result.session_id[:8]}...)",
     )
+
+
+# ============================================================================
+# Environment-based Task Endpoints
+# ============================================================================
+
+@app.get("/environments", response_model=List[EnvironmentInfoResponse])
+async def list_environments():
+    """
+    List all available execution environments
+    """
+    from environments import create_default_registry
+
+    registry = create_default_registry()
+    return [
+        EnvironmentInfoResponse(**env)
+        for env in registry.list_environments()
+    ]
+
+
+@app.get("/environments/{env_type}", response_model=EnvironmentInfoResponse)
+async def get_environment_info(env_type: str):
+    """
+    Get details about a specific environment
+    """
+    from environments import create_default_registry
+
+    registry = create_default_registry()
+    try:
+        env_type_enum = EnvironmentType(env_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown environment type: {env_type}",
+        )
+
+    env = registry.get(env_type_enum)
+    if not env:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Environment not found: {env_type}",
+        )
+
+    return EnvironmentInfoResponse(
+        type=env.env_type.value,
+        name=env.name,
+        description=env.description,
+        required_inputs=env.required_inputs,
+    )
+
+
+@app.post("/environments/{env_type}/tasks", response_model=EnvironmentTaskResponse)
+async def submit_environment_task(env_type: str, request: EnvironmentTaskRequest):
+    """
+    Submit a task to a specific environment
+    """
+    from environments import create_default_registry
+
+    registry = create_default_registry()
+
+    try:
+        env_type_enum = EnvironmentType(env_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown environment type: {env_type}",
+        )
+
+    env = registry.get(env_type_enum)
+    if not env:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Environment not found: {env_type}",
+        )
+
+    # Validate inputs
+    valid, errors = env.validate_inputs(request.inputs)
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid inputs: {'; '.join(errors)}",
+        )
+
+    # Create environment task
+    env_task = EnvironmentTask(
+        env_type=env_type_enum,
+        inputs=request.inputs,
+        additional_prompt=request.additional_prompt,
+        priority=request.priority,
+        callback_url=request.callback_url,
+    )
+
+    # Store task in Redis
+    import json
+    task_key = f"claude:env_tasks:{env_task.task_id}"
+    await redis_client.hset(task_key, mapping={
+        "data": json.dumps(env_task.to_dict()),
+        "status": "queued",
+    })
+
+    # Add to environment task queue
+    queue_key = "claude:env_tasks:queue"
+    score = request.priority * 1e12 + env_task.created_at.timestamp()
+    await redis_client.zadd(queue_key, {json.dumps(env_task.to_dict()): score})
+
+    logger.info(f"Environment task {env_task.task_id} queued for {env_type}")
+
+    return EnvironmentTaskResponse(
+        task_id=env_task.task_id,
+        env_type=env_type,
+        status="queued",
+        message=f"Task queued for {env.name} environment",
+    )
+
+
+@app.post("/environments/crash_analysis/tasks", response_model=EnvironmentTaskResponse)
+async def submit_crash_analysis(request: CrashAnalysisRequest):
+    """
+    Convenience endpoint for crash analysis tasks
+    """
+    # Build inputs from the specific request
+    inputs = {
+        "repo_url": request.repo_url,
+        "backtrace": request.backtrace,
+    }
+    if request.commit_hash:
+        inputs["commit_hash"] = request.commit_hash
+    if request.branch:
+        inputs["branch"] = request.branch
+    if request.logs:
+        inputs["logs"] = request.logs
+
+    # Create environment task request
+    env_request = EnvironmentTaskRequest(
+        env_type="crash_analysis",
+        inputs=inputs,
+        additional_prompt=request.additional_context,
+        priority=request.priority,
+        callback_url=request.callback_url,
+    )
+
+    return await submit_environment_task("crash_analysis", env_request)
+
+
+@app.get(
+    "/environments/{env_type}/tasks/{task_id}",
+    response_model=EnvironmentTaskStatusResponse,
+)
+async def get_environment_task_status(env_type: str, task_id: str):
+    """
+    Get status and results of an environment task
+    """
+    import json
+
+    # Get task from Redis
+    task_key = f"claude:env_tasks:{task_id}"
+    task_data = await redis_client.hgetall(task_key)
+
+    if not task_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found",
+        )
+
+    status = task_data.get(b"status", b"unknown").decode()
+    data = json.loads(task_data.get(b"data", b"{}").decode())
+
+    # Get result if available
+    result_key = f"claude:env_results:{task_id}"
+    result_data = await redis_client.get(result_key)
+
+    response = EnvironmentTaskStatusResponse(
+        task_id=task_id,
+        env_type=data.get("env_type", env_type),
+        status=status,
+    )
+
+    if result_data:
+        result = json.loads(result_data.decode())
+        response.workspace_path = result.get("workspace_path")
+        response.step_results = result.get("step_results")
+        response.final_analysis = result.get("final_analysis")
+        response.error = result.get("error")
+        response.total_duration_seconds = result.get("total_duration_seconds")
+
+    return response
+
+
+@app.get("/environments/{env_type}/tasks", response_model=List[EnvironmentTaskStatusResponse])
+async def list_environment_tasks(
+    env_type: str,
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    """
+    List tasks for a specific environment
+    """
+    import json
+
+    # Scan for environment tasks
+    cursor = 0
+    tasks = []
+    pattern = "claude:env_tasks:*"
+
+    while len(tasks) < limit:
+        cursor, keys = await redis_client.scan(cursor, match=pattern, count=100)
+
+        for key in keys:
+            if key.endswith(b":queue"):
+                continue
+
+            task_data = await redis_client.hgetall(key)
+            if not task_data:
+                continue
+
+            data = json.loads(task_data.get(b"data", b"{}").decode())
+            task_status = task_data.get(b"status", b"unknown").decode()
+
+            # Filter by env_type
+            if data.get("env_type") != env_type:
+                continue
+
+            # Filter by status if specified
+            if status and task_status != status:
+                continue
+
+            tasks.append(EnvironmentTaskStatusResponse(
+                task_id=data.get("task_id", key.decode().split(":")[-1]),
+                env_type=data.get("env_type", env_type),
+                status=task_status,
+            ))
+
+            if len(tasks) >= limit:
+                break
+
+        if cursor == 0:
+            break
+
+    return tasks
 
 
 if __name__ == "__main__":

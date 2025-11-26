@@ -33,7 +33,7 @@ services:
       - ./workspace:/workspace:rw
     restart: unless-stopped
 
-  # Worker - processes tasks from queue
+  # Worker - processes both regular and environment tasks
   worker:
     build:
       context: .
@@ -42,6 +42,9 @@ services:
       - REDIS_URL=redis://redis:6379
       - CLAUDE_BINARY=/usr/local/bin/claude
       - WORKSPACE_ROOT=/workspace
+      - WORKSPACES_ROOT=/workspaces
+      - WORKER_MODE=all  # "all", "regular", or "environment"
+      - MAX_CONCURRENT_TASKS=1
       - LOG_LEVEL=INFO
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     depends_on:
@@ -49,11 +52,34 @@ services:
         condition: service_healthy
     volumes:
       - ./workspace:/workspace:rw
+      - workspaces_data:/workspaces:rw
       - claude_data:/root/.claude
     restart: unless-stopped
-    # Scale workers as needed
     deploy:
       replicas: 1
+
+  # Dedicated environment worker (optional, for scaling)
+  env-worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CLAUDE_BINARY=/usr/local/bin/claude
+      - WORKSPACES_ROOT=/workspaces
+      - WORKER_MODE=environment
+      - MAX_CONCURRENT_TASKS=1
+      - LOG_LEVEL=INFO
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - workspaces_data:/workspaces:rw
+      - claude_data:/root/.claude
+    restart: unless-stopped
+    profiles:
+      - scale  # Only start when scaling env workers
 
   # Optional: Redis Commander UI for debugging
   redis-commander:
@@ -70,3 +96,4 @@ services:
 volumes:
   redis_data:
   claude_data:
+  workspaces_data:

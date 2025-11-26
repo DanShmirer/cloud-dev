@@ -73,6 +73,8 @@ curl http://localhost:8000/tasks/{task_id}
 
 ## API Endpoints
 
+### Regular Tasks
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/tasks` | Submit a new task |
@@ -83,6 +85,17 @@ curl http://localhost:8000/tasks/{task_id}
 | `POST` | `/queue/clear` | Clear pending tasks |
 | `POST` | `/sessions/{id}/continue` | Continue a session |
 | `GET` | `/health` | Health check |
+
+### Environment Tasks
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/environments` | List available environments |
+| `GET` | `/environments/{type}` | Get environment details |
+| `POST` | `/environments/{type}/tasks` | Submit environment task |
+| `GET` | `/environments/{type}/tasks/{id}` | Get environment task status |
+| `GET` | `/environments/{type}/tasks` | List environment tasks |
+| `POST` | `/environments/crash_analysis/tasks` | Submit crash analysis (convenience) |
 
 ## Task Types
 
@@ -122,6 +135,108 @@ curl -X POST http://localhost:8000/sessions/{task_id}/continue \
   -d '{"prompt": "Now add unit tests"}'
 ```
 
+## Execution Environments
+
+Environments provide specialized, pre-configured contexts for specific tasks. Each environment includes:
+- **CLAUDE.md**: Context and instructions for Claude
+- **Workflow Steps**: Multi-step execution pipeline
+- **Custom Commands**: Slash commands for the environment
+- **Sub-agents**: Specialized agents for sub-tasks
+- **Hooks**: Pre/post execution scripts
+
+### Available Environments
+
+| Environment | Type | Description |
+|-------------|------|-------------|
+| Crash Analysis | `crash_analysis` | Analyze crash reports with backtrace correlation |
+
+### Crash Analysis Environment
+
+Analyzes crash reports by cloning the repository at the crash commit and correlating backtraces with source code.
+
+**Required Inputs:**
+- `repo_url`: Git repository URL
+- `backtrace`: The crash backtrace/stack trace
+
+**Optional Inputs:**
+- `commit_hash`: Git commit where crash occurred
+- `branch`: Git branch (if no commit_hash)
+- `logs`: Application logs around crash time
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/environments/crash_analysis/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo_url": "https://github.com/user/project.git",
+    "backtrace": "Traceback (most recent call last):\n  File \"app.py\", line 42...",
+    "commit_hash": "abc123def",
+    "additional_context": "Crash happens under high load"
+  }'
+```
+
+**Workflow:**
+1. Clone repository at specified commit
+2. Validate repository structure
+3. Parse and structure the backtrace
+4. Analyze source files from stack frames
+5. Generate comprehensive crash report
+
+**Output Structure:**
+```
+/workspace/{task_id}/
+├── repo/                    # Cloned repository
+├── inputs/
+│   ├── backtrace.txt       # Original backtrace
+│   └── logs.txt            # Application logs
+├── analysis/
+│   ├── parsed_backtrace.json
+│   ├── file_analysis.md
+│   └── CRASH_REPORT.md     # Final analysis
+└── CLAUDE.md               # Environment context
+```
+
+### Creating Custom Environments
+
+1. Create environment directory:
+```
+environments/my_env/
+├── __init__.py
+├── environment.py
+├── CLAUDE.md
+└── .claude/commands/
+    └── my-command.md
+```
+
+2. Implement `IEnvironment`:
+```python
+from environments.base import IEnvironment
+from shared.models import EnvironmentType, EnvironmentConfig
+
+class MyEnvironment(IEnvironment):
+    @property
+    def env_type(self) -> EnvironmentType:
+        return EnvironmentType.CUSTOM
+
+    @property
+    def required_inputs(self) -> List[str]:
+        return ["input1", "input2"]
+
+    def get_claude_md(self, inputs: Dict) -> str:
+        return "# My Environment\n..."
+
+    def get_workflow_steps(self, inputs: Dict) -> List[WorkflowStep]:
+        return [...]
+
+    def get_final_prompt(self, inputs: Dict) -> str:
+        return "Analyze the results..."
+```
+
+3. Register in `environments/__init__.py`:
+```python
+registry.register(MyEnvironment())
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -132,7 +247,9 @@ curl -X POST http://localhost:8000/sessions/{task_id}/continue \
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
 | `CLAUDE_BINARY` | `claude` | Path to Claude CLI |
 | `WORKSPACE_ROOT` | `/workspace` | Default working directory |
+| `WORKSPACES_ROOT` | `/workspaces` | Root for environment workspaces |
 | `MAX_CONCURRENT_TASKS` | `1` | Concurrent task limit |
+| `WORKER_MODE` | `all` | Worker mode: `all`, `regular`, `environment` |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ### Task Config Options
@@ -172,22 +289,30 @@ claude-task-wrapper/
 ├── docker-compose.yml
 ├── api/
 │   ├── Dockerfile
-│   ├── main.py          # FastAPI application
+│   ├── main.py              # FastAPI application
 │   └── requirements.txt
 ├── worker/
 │   ├── Dockerfile
-│   ├── main.py          # Worker entry point
-│   ├── handlers/
-│   │   ├── base.py      # ITaskHandler interface
-│   │   └── claude.py    # Claude Code handlers
-│   └── requirements.txt
+│   ├── main.py              # Worker entry point (regular + env)
+│   └── handlers/
+│       ├── base.py          # ITaskHandler interface
+│       └── claude.py        # Claude Code handlers
 ├── shared/
 │   ├── models/
-│   │   └── task.py      # Task, TaskResult DTOs
-│   └── queue/
-│       ├── base.py      # Queue interfaces
-│       └── redis_impl.py # Redis implementation
-└── workspace/           # Mounted workspace
+│   │   ├── task.py          # Task, TaskResult DTOs
+│   │   └── environment.py   # Environment models
+│   ├── queue/
+│   │   ├── base.py          # Queue interfaces
+│   │   └── redis_impl.py    # Redis implementation
+│   └── workspace/
+│       └── manager.py       # Workspace manager
+├── environments/
+│   ├── base.py              # IEnvironment interface
+│   └── crash_analysis/
+│       ├── environment.py   # CrashAnalysisEnvironment
+│       ├── CLAUDE.md        # Context template
+│       └── .claude/commands/
+└── workspace/               # Mounted workspace
 ```
 
 ### Adding Custom Handlers
