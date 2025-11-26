@@ -4,22 +4,20 @@ Main entry point for the worker container
 Handles both regular tasks and environment-based tasks
 """
 import os
-import sys
 import json
 import signal
 import asyncio
 import logging
 from typing import Optional
 
-import redis.asyncio as redis
-import httpx
-
 from shared.models import (
     Task, TaskResult, TaskStatus,
-    EnvironmentTask, EnvironmentTaskResult, EnvironmentType,
+    EnvironmentTask, EnvironmentTaskResult,
 )
 from shared.queue import RedisTaskQueue, RedisTaskStore, RedisSessionStore
 from shared.workspace import WorkspaceManager
+from shared.config import get_config, WorkerMode
+from worker.base import BaseWorker
 from worker.handlers import (
     TaskHandlerRegistry,
     ClaudeCodeHandler,
@@ -40,10 +38,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class Worker:
+class Worker(BaseWorker[Task, TaskResult]):
     """
-    Task worker that processes Claude Code tasks from queue
-    Follows Single Responsibility - only handles task processing loop
+    Task worker that processes Claude Code tasks from queue.
+    Extends BaseWorker with Task-specific implementations.
     """
 
     def __init__(
@@ -54,30 +52,23 @@ class Worker:
         poll_timeout: int = 5,
         max_concurrent: int = 1,
     ):
-        self._redis_url = redis_url
+        super().__init__(
+            redis_url=redis_url,
+            poll_timeout=poll_timeout,
+            max_concurrent=max_concurrent,
+            worker_name="Worker",
+        )
         self._claude_binary = claude_binary
         self._workspace_root = workspace_root
-        self._poll_timeout = poll_timeout
-        self._max_concurrent = max_concurrent
-        self._running = False
-        self._current_tasks: set = set()
 
-        # Will be initialized in start()
-        self._redis: Optional[redis.Redis] = None
+        # Task-specific resources
         self._queue: Optional[RedisTaskQueue] = None
         self._store: Optional[RedisTaskStore] = None
         self._session_store: Optional[RedisSessionStore] = None
         self._registry: Optional[TaskHandlerRegistry] = None
 
-    async def _init_connections(self) -> None:
-        """Initialize Redis connections and handler registry"""
-        logger.info(f"Connecting to Redis at {self._redis_url}")
-        self._redis = redis.from_url(self._redis_url, decode_responses=False)
-
-        # Test connection
-        await self._redis.ping()
-        logger.info("Redis connection established")
-
+    async def _init_resources(self) -> None:
+        """Initialize task-specific resources"""
         # Initialize stores
         self._queue = RedisTaskQueue(self._redis)
         self._store = RedisTaskStore(self._redis)
@@ -98,11 +89,29 @@ class Worker:
 
         logger.info(f"Registered handlers: {self._registry.list_handlers()}")
 
-    async def _cleanup(self) -> None:
-        """Cleanup connections"""
-        if self._redis:
-            await self._redis.close()
-            logger.info("Redis connection closed")
+    async def _cleanup_resources(self) -> None:
+        """Cleanup task-specific resources"""
+        # No additional cleanup needed for this worker
+        pass
+
+    async def _dequeue_task(self, timeout: int) -> Optional[Task]:
+        """Dequeue next task from the queue"""
+        return await self._queue.dequeue(timeout=timeout)
+
+    async def _check_cancelled(self, task: Task) -> bool:
+        """Check if task was cancelled before processing"""
+        existing = await self._store.get_task(task.task_id)
+        if existing:
+            key = f"claude:tasks:task:{task.task_id}"
+            status = await self._redis.hget(key, "status")
+            status_str = status.decode() if isinstance(status, bytes) else status
+            if status_str == TaskStatus.CANCELLED.value:
+                return True
+        return False
+
+    async def _update_running_status(self, task: Task) -> None:
+        """Update task status to running"""
+        await self._store.update_status(task.task_id, TaskStatus.RUNNING)
 
     async def _process_task(self, task: Task) -> TaskResult:
         """Process a single task using appropriate handler"""
@@ -116,9 +125,6 @@ class Worker:
 
         logger.info(f"Processing task {task.task_id} with handler {handler.name}")
 
-        # Update status to running
-        await self._store.update_status(task.task_id, TaskStatus.RUNNING)
-
         # Execute task
         result = await handler.execute(task)
 
@@ -128,111 +134,31 @@ class Worker:
 
         return result
 
-    async def _send_callback(self, result: TaskResult, callback_url: str) -> None:
-        """Send result to callback webhook"""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    callback_url,
-                    json=result.to_dict(),
-                    timeout=30.0,
-                )
-                if response.status_code >= 400:
-                    logger.warning(
-                        f"Callback failed for task {result.task_id}: "
-                        f"status={response.status_code}"
-                    )
-                else:
-                    logger.info(f"Callback sent for task {result.task_id}")
-        except Exception as e:
-            logger.error(f"Callback error for task {result.task_id}: {e}")
+    async def _save_result(self, result: TaskResult) -> None:
+        """Save task result to storage"""
+        await self._store.save_result(result)
 
-    async def _worker_loop(self, worker_id: int) -> None:
-        """Main worker loop - polls queue and processes tasks"""
-        logger.info(f"Worker {worker_id} started")
+    def _get_callback_url(self, task: Task) -> Optional[str]:
+        """Get callback URL from task"""
+        return task.callback_url
 
-        while self._running:
-            try:
-                # Poll for task with timeout
-                task = await self._queue.dequeue(timeout=self._poll_timeout)
+    def _get_task_id(self, task: Task) -> str:
+        """Get task ID from task object"""
+        return task.task_id
 
-                if task is None:
-                    # No task available, continue polling
-                    continue
+    def _get_result_status(self, result: TaskResult) -> str:
+        """Get status string from result"""
+        return result.status.value
 
-                # Check if task was cancelled
-                existing = await self._store.get_task(task.task_id)
-                if existing:
-                    key = f"claude:tasks:task:{task.task_id}"
-                    status = await self._redis.hget(key, "status")
-                    status_str = status.decode() if isinstance(status, bytes) else status
-                    if status_str == TaskStatus.CANCELLED.value:
-                        logger.info(f"Task {task.task_id} was cancelled, skipping")
-                        continue
-
-                # Track current task
-                self._current_tasks.add(task.task_id)
-
-                try:
-                    # Process task
-                    result = await self._process_task(task)
-
-                    # Store result
-                    await self._store.save_result(result)
-
-                    logger.info(
-                        f"Task {task.task_id} completed with status {result.status.value}"
-                    )
-
-                    # Send callback if configured
-                    if task.callback_url:
-                        await self._send_callback(result, task.callback_url)
-
-                finally:
-                    self._current_tasks.discard(task.task_id)
-
-            except asyncio.CancelledError:
-                logger.info(f"Worker {worker_id} cancelled")
-                break
-            except Exception as e:
-                logger.exception(f"Worker {worker_id} error: {e}")
-                # Continue processing other tasks
-                await asyncio.sleep(1)
-
-        logger.info(f"Worker {worker_id} stopped")
-
-    async def start(self) -> None:
-        """Start the worker"""
-        self._running = True
-
-        await self._init_connections()
-
-        # Start worker tasks
-        workers = [
-            asyncio.create_task(self._worker_loop(i))
-            for i in range(self._max_concurrent)
-        ]
-
-        logger.info(f"Started {self._max_concurrent} worker(s)")
-
-        # Wait for all workers
-        try:
-            await asyncio.gather(*workers)
-        except asyncio.CancelledError:
-            logger.info("Workers cancelled")
-        finally:
-            await self._cleanup()
-
-    def stop(self) -> None:
-        """Signal workers to stop"""
-        logger.info("Stopping worker...")
-        self._running = False
+    def _result_to_dict(self, result: TaskResult) -> dict:
+        """Convert result to dictionary for callback"""
+        return result.to_dict()
 
 
-class EnvironmentWorker:
+class EnvironmentWorker(BaseWorker[EnvironmentTask, EnvironmentTaskResult]):
     """
-    Worker that processes environment-based tasks
-    Executes full environment workflows with isolated workspaces
+    Worker that processes environment-based tasks.
+    Extends BaseWorker with environment-specific implementations.
     """
 
     def __init__(
@@ -243,28 +169,22 @@ class EnvironmentWorker:
         poll_timeout: int = 5,
         max_concurrent: int = 1,
     ):
-        self._redis_url = redis_url
+        super().__init__(
+            redis_url=redis_url,
+            poll_timeout=poll_timeout,
+            max_concurrent=max_concurrent,
+            worker_name="EnvironmentWorker",
+        )
         self._claude_binary = claude_binary
         self._workspaces_root = workspaces_root
-        self._poll_timeout = poll_timeout
-        self._max_concurrent = max_concurrent
-        self._running = False
-        self._current_tasks: set = set()
 
-        # Will be initialized in start()
-        self._redis: Optional[redis.Redis] = None
+        # Environment-specific resources
         self._workspace_manager: Optional[WorkspaceManager] = None
         self._env_registry: Optional[EnvironmentRegistry] = None
         self._executor: Optional[EnvironmentExecutor] = None
 
-    async def _init_connections(self) -> None:
-        """Initialize connections and registries"""
-        logger.info(f"Connecting to Redis at {self._redis_url}")
-        self._redis = redis.from_url(self._redis_url, decode_responses=False)
-
-        await self._redis.ping()
-        logger.info("Redis connection established")
-
+    async def _init_resources(self) -> None:
+        """Initialize environment-specific resources"""
         # Initialize workspace manager
         self._workspace_manager = WorkspaceManager(
             base_path=self._workspaces_root,
@@ -282,13 +202,12 @@ class EnvironmentWorker:
 
         logger.info(f"Available environments: {[e.value for e in self._env_registry.get_all_types()]}")
 
-    async def _cleanup(self) -> None:
-        """Cleanup connections"""
-        if self._redis:
-            await self._redis.close()
-            logger.info("Redis connection closed")
+    async def _cleanup_resources(self) -> None:
+        """Cleanup environment-specific resources"""
+        # No additional cleanup needed
+        pass
 
-    async def _dequeue_env_task(self, timeout: int = 5) -> Optional[EnvironmentTask]:
+    async def _dequeue_task(self, timeout: int) -> Optional[EnvironmentTask]:
         """Get next environment task from queue"""
         queue_key = "claude:env_tasks:queue"
 
@@ -299,45 +218,20 @@ class EnvironmentWorker:
             return EnvironmentTask.from_dict(data)
         return None
 
-    async def _update_task_status(self, task_id: str, status: str) -> None:
-        """Update environment task status in Redis"""
-        task_key = f"claude:env_tasks:{task_id}"
-        await self._redis.hset(task_key, "status", status)
+    async def _check_cancelled(self, task: EnvironmentTask) -> bool:
+        """Check if environment task was cancelled"""
+        task_key = f"claude:env_tasks:{task.task_id}"
+        status = await self._redis.hget(task_key, "status")
+        if status and status.decode() == "cancelled":
+            return True
+        return False
 
-    async def _save_result(self, result: EnvironmentTaskResult) -> None:
-        """Save environment task result"""
-        result_key = f"claude:env_results:{result.task_id}"
-        await self._redis.setex(
-            result_key,
-            86400 * 7,  # 7 days TTL
-            json.dumps(result.to_dict()),
-        )
-        await self._update_task_status(result.task_id, result.status)
+    async def _update_running_status(self, task: EnvironmentTask) -> None:
+        """Update environment task status to running"""
+        task_key = f"claude:env_tasks:{task.task_id}"
+        await self._redis.hset(task_key, "status", "running")
 
-    async def _send_callback(
-        self,
-        result: EnvironmentTaskResult,
-        callback_url: str,
-    ) -> None:
-        """Send result to callback webhook"""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    callback_url,
-                    json=result.to_dict(),
-                    timeout=30.0,
-                )
-                if response.status_code >= 400:
-                    logger.warning(
-                        f"Callback failed for env task {result.task_id}: "
-                        f"status={response.status_code}"
-                    )
-                else:
-                    logger.info(f"Callback sent for env task {result.task_id}")
-        except Exception as e:
-            logger.error(f"Callback error for env task {result.task_id}: {e}")
-
-    async def _process_env_task(self, task: EnvironmentTask) -> EnvironmentTaskResult:
+    async def _process_task(self, task: EnvironmentTask) -> EnvironmentTaskResult:
         """Process an environment task"""
         env = self._env_registry.get(task.env_type)
         if not env:
@@ -356,116 +250,73 @@ class EnvironmentWorker:
 
         return result
 
-    async def _worker_loop(self, worker_id: int) -> None:
-        """Main worker loop for environment tasks"""
-        logger.info(f"Environment worker {worker_id} started")
+    async def _save_result(self, result: EnvironmentTaskResult) -> None:
+        """Save environment task result"""
+        result_key = f"claude:env_results:{result.task_id}"
+        await self._redis.setex(
+            result_key,
+            86400 * 7,  # 7 days TTL
+            json.dumps(result.to_dict()),
+        )
+        # Also update task status
+        task_key = f"claude:env_tasks:{result.task_id}"
+        await self._redis.hset(task_key, "status", result.status)
 
-        while self._running:
-            try:
-                # Poll for environment task
-                task = await self._dequeue_env_task(timeout=self._poll_timeout)
+    def _get_callback_url(self, task: EnvironmentTask) -> Optional[str]:
+        """Get callback URL from environment task"""
+        return task.callback_url
 
-                if task is None:
-                    continue
+    def _get_task_id(self, task: EnvironmentTask) -> str:
+        """Get task ID from environment task"""
+        return task.task_id
 
-                # Check if cancelled
-                task_key = f"claude:env_tasks:{task.task_id}"
-                status = await self._redis.hget(task_key, "status")
-                if status and status.decode() == "cancelled":
-                    logger.info(f"Env task {task.task_id} was cancelled, skipping")
-                    continue
+    def _get_result_status(self, result: EnvironmentTaskResult) -> str:
+        """Get status string from environment result"""
+        return result.status
 
-                self._current_tasks.add(task.task_id)
-
-                try:
-                    # Update status
-                    await self._update_task_status(task.task_id, "running")
-
-                    # Process task
-                    result = await self._process_env_task(task)
-
-                    # Save result
-                    await self._save_result(result)
-
-                    logger.info(
-                        f"Env task {task.task_id} completed with status {result.status}"
-                    )
-
-                    # Send callback if configured
-                    if task.callback_url:
-                        await self._send_callback(result, task.callback_url)
-
-                finally:
-                    self._current_tasks.discard(task.task_id)
-
-            except asyncio.CancelledError:
-                logger.info(f"Environment worker {worker_id} cancelled")
-                break
-            except Exception as e:
-                logger.exception(f"Environment worker {worker_id} error: {e}")
-                await asyncio.sleep(1)
-
-        logger.info(f"Environment worker {worker_id} stopped")
-
-    async def start(self) -> None:
-        """Start the environment worker"""
-        self._running = True
-
-        await self._init_connections()
-
-        workers = [
-            asyncio.create_task(self._worker_loop(i))
-            for i in range(self._max_concurrent)
-        ]
-
-        logger.info(f"Started {self._max_concurrent} environment worker(s)")
-
-        try:
-            await asyncio.gather(*workers)
-        except asyncio.CancelledError:
-            logger.info("Environment workers cancelled")
-        finally:
-            await self._cleanup()
-
-    def stop(self) -> None:
-        """Signal workers to stop"""
-        logger.info("Stopping environment worker...")
-        self._running = False
+    def _result_to_dict(self, result: EnvironmentTaskResult) -> dict:
+        """Convert environment result to dictionary for callback"""
+        return result.to_dict()
 
 
 async def main():
     """Main entry point - runs both regular and environment workers"""
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-    claude_binary = os.getenv("CLAUDE_BINARY", "claude")
-    workspace_root = os.getenv("WORKSPACE_ROOT", "/workspace")
-    workspaces_root = os.getenv("WORKSPACES_ROOT", "/workspaces")
-    max_concurrent = int(os.getenv("MAX_CONCURRENT_TASKS", "1"))
-    worker_mode = os.getenv("WORKER_MODE", "all")  # "all", "regular", "environment"
+    # Load centralized configuration
+    config = get_config()
+
+    # Validate configuration
+    errors = config.validate()
+    if errors:
+        for error in errors:
+            logger.error(f"Configuration error: {error}")
+        return
 
     workers = []
 
     # Create regular task worker
-    if worker_mode in ("all", "regular"):
+    if config.worker.mode in (WorkerMode.ALL, WorkerMode.REGULAR):
         regular_worker = Worker(
-            redis_url=redis_url,
-            claude_binary=claude_binary,
-            workspace_root=workspace_root,
-            max_concurrent=max_concurrent,
+            redis_url=config.redis.url,
+            claude_binary=config.claude.binary_path,
+            workspace_root=config.worker.workspace_root,
+            poll_timeout=config.worker.poll_timeout_seconds,
+            max_concurrent=config.worker.max_concurrent_tasks,
         )
         workers.append(("regular", regular_worker))
 
     # Create environment task worker
-    if worker_mode in ("all", "environment"):
+    if config.worker.mode in (WorkerMode.ALL, WorkerMode.ENVIRONMENT):
         env_worker = EnvironmentWorker(
-            redis_url=redis_url,
-            claude_binary=claude_binary,
-            workspaces_root=workspaces_root,
-            max_concurrent=max_concurrent,
+            redis_url=config.redis.url,
+            claude_binary=config.claude.binary_path,
+            workspaces_root=config.worker.workspaces_root,
+            poll_timeout=config.worker.poll_timeout_seconds,
+            max_concurrent=config.worker.max_concurrent_tasks,
         )
         workers.append(("environment", env_worker))
 
     if not workers:
-        logger.error(f"Invalid WORKER_MODE: {worker_mode}")
+        logger.error(f"Invalid WORKER_MODE: {config.worker.mode}")
         return
 
     # Handle shutdown signals
@@ -478,7 +329,7 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, signal_handler)
 
-    logger.info(f"Starting workers in mode: {worker_mode}")
+    logger.info(f"Starting workers in mode: {config.worker.mode.value}")
 
     # Start all workers concurrently
     await asyncio.gather(*[

@@ -5,13 +5,14 @@ from .base import (
     TaskHandlerRegistry,
     ValidationResult,
 )
-from .claude import ClaudeCodeHandler, ClaudeSessionHandler
+from .claude import BaseClaudeHandler, ClaudeCodeHandler, ClaudeSessionHandler
 
 __all__ = [
     "ITaskHandler",
     "ITaskHandlerRegistry",
     "TaskHandlerRegistry",
     "ValidationResult",
+    "BaseClaudeHandler",
     "ClaudeCodeHandler",
     "ClaudeSessionHandler",
 ]
