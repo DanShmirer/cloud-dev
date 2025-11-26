@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  # Redis for task queue and result storage
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # API Gateway - receives tasks and returns results
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./workspace:/workspace:rw
+    restart: unless-stopped
+
+  # Worker - processes both regular and environment tasks
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CLAUDE_BINARY=/usr/local/bin/claude
+      - WORKSPACE_ROOT=/workspace
+      - WORKSPACES_ROOT=/workspaces
+      - WORKER_MODE=all  # "all", "regular", or "environment"
+      - MAX_CONCURRENT_TASKS=1
+      - LOG_LEVEL=INFO
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./workspace:/workspace:rw
+      - workspaces_data:/workspaces:rw
+      - claude_data:/root/.claude
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  # Dedicated environment worker (optional, for scaling)
+  env-worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CLAUDE_BINARY=/usr/local/bin/claude
+      - WORKSPACES_ROOT=/workspaces
+      - WORKER_MODE=environment
+      - MAX_CONCURRENT_TASKS=1
+      - LOG_LEVEL=INFO
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - workspaces_data:/workspaces:rw
+      - claude_data:/root/.claude
+    restart: unless-stopped
+    profiles:
+      - scale  # Only start when scaling env workers
+
+  # Optional: Redis Commander UI for debugging
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    profiles:
+      - debug
+
+volumes:
+  redis_data:
+  claude_data:
+  workspaces_data:
