@@ -1,15 +1,19 @@
 """
 FastAPI API Gateway for Claude Task Wrapper
 Provides REST endpoints for task submission and status tracking
+Serves the web UI for interactive task management
 """
 import os
 import logging
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
 import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from shared.models import (
@@ -62,6 +66,8 @@ class TaskStatusResponse(BaseModel):
     """Task status response"""
     task_id: str
     status: str
+    prompt: Optional[str] = None
+    created_at: Optional[str] = None
     output: Optional[str] = None
     error: Optional[str] = None
     session_id: Optional[str] = None
@@ -199,6 +205,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files for UI
+UI_DIR = Path(__file__).parent.parent / "ui"
+if UI_DIR.exists():
+    app.mount("/static/css", StaticFiles(directory=UI_DIR / "css"), name="css")
+    app.mount("/static/js", StaticFiles(directory=UI_DIR / "js"), name="js")
+    logger.info(f"Serving static UI from {UI_DIR}")
+
+
+@app.get("/", include_in_schema=False)
+async def serve_ui():
+    """Serve the web UI"""
+    index_path = UI_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return {"message": "Claude Task Wrapper API", "docs": "/docs"}
+
 
 @app.get("/health")
 async def health_check():
@@ -324,10 +346,14 @@ async def list_tasks(
     responses = []
     for task in tasks:
         result = await task_store.get_result(task.task_id)
+        created_at = task.created_at.isoformat() if task.created_at else None
+
         if result:
             responses.append(TaskStatusResponse(
                 task_id=task.task_id,
                 status=result.status.value,
+                prompt=task.prompt,
+                created_at=created_at,
                 output=result.output,
                 error=result.error,
                 session_id=result.session_id,
@@ -338,6 +364,8 @@ async def list_tasks(
             responses.append(TaskStatusResponse(
                 task_id=task.task_id,
                 status=TaskStatus.PENDING.value,
+                prompt=task.prompt,
+                created_at=created_at,
             ))
 
     return responses

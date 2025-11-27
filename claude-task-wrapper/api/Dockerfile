@@ -18,6 +18,9 @@ COPY shared /app/shared
 # Copy API code
 COPY api /app/api
 
+# Copy UI files
+COPY ui /app/ui
+
 # Set Python path
 ENV PYTHONPATH=/app
 

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Task Wrapper</title>
+    <link rel="stylesheet" href="/static/css/variables.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header__brand">
+                <h1 class="header__title">Claude Task Wrapper</h1>
+                <span class="header__subtitle">Task Queue Management</span>
+            </div>
+            <div class="header__status" id="connectionStatus">
+                <span class="status-indicator status-indicator--unknown"></span>
+                <span>Checking...</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Navigation Tabs -->
+            <nav class="tabs" role="tablist">
+                <button class="tab tab--active" role="tab" data-tab="tasks" aria-selected="true">
+                    Tasks
+                </button>
+                <button class="tab" role="tab" data-tab="environments" aria-selected="false">
+                    Environments
+                </button>
+                <button class="tab" role="tab" data-tab="queue" aria-selected="false">
+                    Queue Stats
+                </button>
+            </nav>
+
+            <!-- Tab Panels -->
+            <div class="tab-panels">
+                <!-- Tasks Panel -->
+                <section class="tab-panel tab-panel--active" id="panel-tasks" role="tabpanel">
+                    <div class="panel-grid">
+                        <!-- Task Submission Form -->
+                        <div class="card">
+                            <div class="card__header">
+                                <h2 class="card__title">Submit Task</h2>
+                            </div>
+                            <div class="card__body">
+                                <form id="taskForm" class="form">
+                                    <div class="form__group">
+                                        <label class="form__label" for="taskPrompt">Prompt *</label>
+                                        <textarea
+                                            id="taskPrompt"
+                                            class="form__textarea"
+                                            rows="4"
+                                            placeholder="Enter your task prompt..."
+                                            required
+                                        ></textarea>
+                                    </div>
+
+                                    <div class="form__row">
+                                        <div class="form__group">
+                                            <label class="form__label" for="taskType">Task Type</label>
+                                            <select id="taskType" class="form__select">
+                                                <option value="single">Single</option>
+                                                <option value="session">Session</option>
+                                            </select>
+                                        </div>
+                                        <div class="form__group">
+                                            <label class="form__label" for="taskModel">Model</label>
+                                            <select id="taskModel" class="form__select">
+                                                <option value="sonnet">Sonnet</option>
+                                                <option value="opus">Opus</option>
+                                                <option value="haiku">Haiku</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div class="form__row">
+                                        <div class="form__group">
+                                            <label class="form__label" for="taskPriority">Priority</label>
+                                            <select id="taskPriority" class="form__select">
+                                                <option value="1">Low (1)</option>
+                                                <option value="5" selected>Normal (5)</option>
+                                                <option value="10">High (10)</option>
+                                                <option value="15">Urgent (15)</option>
+                                            </select>
+                                        </div>
+                                        <div class="form__group">
+                                            <label class="form__label" for="taskTimeout">Timeout (s)</label>
+                                            <input
+                                                type="number"
+                                                id="taskTimeout"
+                                                class="form__input"
+                                                value="300"
+                                                min="1"
+                                                max="3600"
+                                            >
+                                        </div>
+                                    </div>
+
+                                    <details class="form__details">
+                                        <summary>Advanced Options</summary>
+                                        <div class="form__group">
+                                            <label class="form__label" for="taskTools">Allowed Tools</label>
+                                            <input
+                                                type="text"
+                                                id="taskTools"
+                                                class="form__input"
+                                                value="Read,Glob,Grep,Bash,Edit,Write"
+                                                placeholder="Comma-separated tool names"
+                                            >
+                                        </div>
+                                        <div class="form__group">
+                                            <label class="form__label" for="taskWorkDir">Working Directory</label>
+                                            <input
+                                                type="text"
+                                                id="taskWorkDir"
+                                                class="form__input"
+                                                value="/workspace"
+                                            >
+                                        </div>
+                                        <div class="form__group">
+                                            <label class="form__label" for="taskCallback">Callback URL</label>
+                                            <input
+                                                type="url"
+                                                id="taskCallback"
+                                                class="form__input"
+                                                placeholder="https://..."
+                                            >
+                                        </div>
+                                    </details>
+
+                                    <div class="form__actions">
+                                        <button type="submit" class="btn btn--primary">
+                                            Submit Task
+                                        </button>
+                                        <button type="reset" class="btn btn--secondary">
+                                            Reset
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Task List -->
+                        <div class="card">
+                            <div class="card__header">
+                                <h2 class="card__title">Recent Tasks</h2>
+                                <button class="btn btn--small btn--ghost" id="refreshTasks">
+                                    Refresh
+                                </button>
+                            </div>
+                            <div class="card__body">
+                                <div class="task-filters">
+                                    <select id="taskStatusFilter" class="form__select form__select--small">
+                                        <option value="">All Statuses</option>
+                                        <option value="pending">Pending</option>
+                                        <option value="running">Running</option>
+                                        <option value="completed">Completed</option>
+                                        <option value="failed">Failed</option>
+                                        <option value="cancelled">Cancelled</option>
+                                    </select>
+                                </div>
+                                <div id="taskList" class="task-list">
+                                    <div class="task-list__empty">
+                                        No tasks yet. Submit a task to get started.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Task Detail Modal -->
+                    <div id="taskDetailModal" class="modal" hidden>
+                        <div class="modal__backdrop"></div>
+                        <div class="modal__content">
+                            <div class="modal__header">
+                                <h3 class="modal__title">Task Details</h3>
+                                <button class="modal__close" aria-label="Close">&times;</button>
+                            </div>
+                            <div class="modal__body" id="taskDetailContent">
+                                <!-- Populated by JavaScript -->
+                            </div>
+                            <div class="modal__footer">
+                                <button class="btn btn--secondary modal__close-btn">Close</button>
+                                <button class="btn btn--primary" id="continueSessionBtn" hidden>
+                                    Continue Session
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Environments Panel -->
+                <section class="tab-panel" id="panel-environments" role="tabpanel" hidden>
+                    <div class="panel-grid">
+                        <!-- Environment Selection -->
+                        <div class="card">
+                            <div class="card__header">
+                                <h2 class="card__title">Submit Environment Task</h2>
+                            </div>
+                            <div class="card__body">
+                                <div id="envSelector" class="env-selector">
+                                    <!-- Populated by JavaScript -->
+                                    <div class="loading">Loading environments...</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Crash Analysis Form (shown when selected) -->
+                        <div class="card" id="crashAnalysisForm" hidden>
+                            <div class="card__header">
+                                <h2 class="card__title">Crash Analysis</h2>
+                            </div>
+                            <div class="card__body">
+                                <form id="crashForm" class="form">
+                                    <div class="form__group">
+                                        <label class="form__label" for="crashRepo">Repository URL *</label>
+                                        <input
+                                            type="url"
+                                            id="crashRepo"
+                                            class="form__input"
+                                            placeholder="https://github.com/user/repo"
+                                            required
+                                        >
+                                    </div>
+                                    <div class="form__group">
+                                        <label class="form__label" for="crashBacktrace">Backtrace *</label>
+                                        <textarea
+                                            id="crashBacktrace"
+                                            class="form__textarea form__textarea--code"
+                                            rows="8"
+                                            placeholder="Paste your stack trace here..."
+                                            required
+                                        ></textarea>
+                                    </div>
+                                    <div class="form__row">
+                                        <div class="form__group">
+                                            <label class="form__label" for="crashCommit">Commit Hash</label>
+                                            <input
+                                                type="text"
+                                                id="crashCommit"
+                                                class="form__input"
+                                                placeholder="abc123..."
+                                            >
+                                        </div>
+                                        <div class="form__group">
+                                            <label class="form__label" for="crashBranch">Branch</label>
+                                            <input
+                                                type="text"
+                                                id="crashBranch"
+                                                class="form__input"
+                                                placeholder="main"
+                                            >
+                                        </div>
+                                    </div>
+                                    <div class="form__group">
+                                        <label class="form__label" for="crashLogs">Application Logs</label>
+                                        <textarea
+                                            id="crashLogs"
+                                            class="form__textarea form__textarea--code"
+                                            rows="4"
+                                            placeholder="Relevant log output..."
+                                        ></textarea>
+                                    </div>
+                                    <div class="form__group">
+                                        <label class="form__label" for="crashContext">Additional Context</label>
+                                        <textarea
+                                            id="crashContext"
+                                            class="form__textarea"
+                                            rows="2"
+                                            placeholder="Any additional information..."
+                                        ></textarea>
+                                    </div>
+                                    <div class="form__actions">
+                                        <button type="submit" class="btn btn--primary">
+                                            Analyze Crash
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Environment Task List -->
+                        <div class="card">
+                            <div class="card__header">
+                                <h2 class="card__title">Environment Tasks</h2>
+                                <button class="btn btn--small btn--ghost" id="refreshEnvTasks">
+                                    Refresh
+                                </button>
+                            </div>
+                            <div class="card__body">
+                                <div id="envTaskList" class="task-list">
+                                    <div class="task-list__empty">
+                                        No environment tasks yet.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Queue Stats Panel -->
+                <section class="tab-panel" id="panel-queue" role="tabpanel" hidden>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-card__value" id="statPending">-</div>
+                            <div class="stat-card__label">Pending Tasks</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-card__value" id="statHandlers">-</div>
+                            <div class="stat-card__label">Active Handlers</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-card__value" id="statCompleted">-</div>
+                            <div class="stat-card__label">Completed Today</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-card__value" id="statFailed">-</div>
+                            <div class="stat-card__label">Failed Today</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card__header">
+                            <h2 class="card__title">Queue Management</h2>
+                        </div>
+                        <div class="card__body">
+                            <div class="queue-actions">
+                                <button class="btn btn--secondary" id="refreshStats">
+                                    Refresh Stats
+                                </button>
+                                <button class="btn btn--danger" id="clearQueue">
+                                    Clear Queue
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <!-- Toast Notifications -->
+        <div id="toastContainer" class="toast-container"></div>
+    </div>
+
+    <!-- JavaScript Modules -->
+    <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
