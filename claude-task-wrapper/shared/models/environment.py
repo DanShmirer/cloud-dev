@@ -11,9 +11,81 @@ import uuid
 class EnvironmentType(Enum):
     """Available environment types"""
     CRASH_ANALYSIS = "crash_analysis"
+    FACTS_EXTRACTION = "facts_extraction"
     CODE_REVIEW = "code_review"
     REFACTORING = "refactoring"
     CUSTOM = "custom"
+
+
+class MessageRole(Enum):
+    """Role in a conversation message"""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+@dataclass
+class ConversationMessage:
+    """A single message in an AI conversation"""
+    role: MessageRole
+    content: str
+    timestamp: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "role": self.role.value,
+            "content": self.content,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ConversationMessage":
+        return cls(
+            role=MessageRole(data["role"]),
+            content=data["content"],
+            timestamp=datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else None,
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass
+class ExtractedFact:
+    """A fact extracted from conversation"""
+    category: str  # e.g., "preference", "fact", "constraint", "goal"
+    content: str
+    confidence: float  # 0.0 to 1.0
+    source_message_index: Optional[int] = None
+    tags: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "category": self.category,
+            "content": self.content,
+            "confidence": self.confidence,
+            "source_message_index": self.source_message_index,
+            "tags": self.tags,
+        }
+
+
+@dataclass
+class ExtractionResult:
+    """Result of facts/preferences extraction"""
+    facts: List[ExtractedFact] = field(default_factory=list)
+    preferences: List[ExtractedFact] = field(default_factory=list)
+    user_profile: Dict[str, Any] = field(default_factory=dict)
+    key_topics: List[str] = field(default_factory=list)
+    summary: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "facts": [f.to_dict() for f in self.facts],
+            "preferences": [p.to_dict() for p in self.preferences],
+            "user_profile": self.user_profile,
+            "key_topics": self.key_topics,
+            "summary": self.summary,
+        }
 
 
 class WorkflowStepStatus(Enum):

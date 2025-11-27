@@ -121,6 +121,12 @@ class App {
             this.submitCrashAnalysis();
         });
 
+        // Facts extraction form
+        document.getElementById('factsForm')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.submitFactsExtraction();
+        });
+
         // Refresh buttons
         document.getElementById('refreshTasks')?.addEventListener('click', () => {
             this.loadTasks();
@@ -344,6 +350,52 @@ class App {
     }
 
     /**
+     * Submit facts extraction
+     */
+    async submitFactsExtraction() {
+        const messagesText = document.getElementById('factsMessages').value;
+        let messages;
+
+        // Parse JSON messages
+        try {
+            messages = JSON.parse(messagesText);
+            if (!Array.isArray(messages)) {
+                throw new Error('Messages must be an array');
+            }
+        } catch (parseError) {
+            this.showError(`Invalid JSON format: ${parseError.message}`);
+            return;
+        }
+
+        // Parse focus areas
+        const focusAreasText = document.getElementById('factsFocusAreas').value;
+        const focusAreas = focusAreasText
+            ? focusAreasText.split(',').map(s => s.trim()).filter(s => s)
+            : null;
+
+        const formData = {
+            messages: messages,
+            contextName: document.getElementById('factsContextName').value || 'conversation',
+            extractionFocus: document.getElementById('factsFocus').value || 'general',
+            focusAreas: focusAreas,
+            additionalInstructions: document.getElementById('factsInstructions').value || null,
+            priority: parseInt(document.getElementById('factsPriority').value, 10),
+            callbackUrl: document.getElementById('factsCallback').value || null,
+        };
+
+        try {
+            const result = await environmentApi.submitFactsExtraction(formData);
+            this.showSuccess(`Facts extraction task ${result.task_id.substring(0, 8)}... submitted`);
+            document.getElementById('factsForm').reset();
+
+            // Refresh environment tasks
+            await this.loadEnvTasks();
+        } catch (error) {
+            this.showError(`Failed to submit facts extraction: ${error.message}`);
+        }
+    }
+
+    /**
      * Show task detail modal
      */
     async showTaskDetail(taskId) {
@@ -408,10 +460,13 @@ class App {
     showEnvironmentForm(envType) {
         // Hide all environment forms first
         document.getElementById('crashAnalysisForm').hidden = true;
+        document.getElementById('factsExtractionForm').hidden = true;
 
         // Show the relevant form
         if (envType === 'crash_analysis') {
             document.getElementById('crashAnalysisForm').hidden = false;
+        } else if (envType === 'facts_extraction') {
+            document.getElementById('factsExtractionForm').hidden = false;
         }
     }
 

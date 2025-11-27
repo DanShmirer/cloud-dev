@@ -17,6 +17,11 @@ from .environment import (
     WorkflowStepStatus,
     HookConfig,
     SubAgentConfig,
+    # Facts extraction models
+    MessageRole,
+    ConversationMessage,
+    ExtractedFact,
+    ExtractionResult,
 )
 
 __all__ = [
@@ -37,4 +42,9 @@ __all__ = [
     "WorkflowStepStatus",
     "HookConfig",
     "SubAgentConfig",
+    # Facts extraction models
+    "MessageRole",
+    "ConversationMessage",
+    "ExtractedFact",
+    "ExtractionResult",
 ]

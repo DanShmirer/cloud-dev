@@ -207,6 +207,7 @@ export class EnvironmentSelectorComponent extends Component {
 
         const icons = {
             'crash_analysis': '🔍',
+            'facts_extraction': '📝',
         };
 
         const html = environments.map(env => `

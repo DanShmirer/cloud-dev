@@ -121,6 +121,41 @@ class CrashAnalysisRequest(BaseModel):
     callback_url: Optional[str] = None
 
 
+class ConversationMessageRequest(BaseModel):
+    """A single message in a conversation"""
+    role: str = Field(..., description="Message role: user, assistant, or system")
+    content: str = Field(..., description="Message content")
+    timestamp: Optional[str] = Field(default=None, description="ISO timestamp")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata")
+
+
+class FactsExtractionRequest(BaseModel):
+    """Request for facts and preferences extraction from conversation messages"""
+    messages: List[ConversationMessageRequest] = Field(
+        ...,
+        description="List of conversation messages to analyze",
+        min_length=1,
+    )
+    context_name: Optional[str] = Field(
+        default="conversation",
+        description="Identifier for this conversation context",
+    )
+    extraction_focus: Optional[str] = Field(
+        default="general",
+        description="Focus area: general, technical, personal, business",
+    )
+    focus_areas: Optional[List[str]] = Field(
+        default=None,
+        description="Specific areas to pay attention to",
+    )
+    additional_instructions: Optional[str] = Field(
+        default=None,
+        description="Additional extraction instructions",
+    )
+    priority: int = Field(default=5, ge=1, le=20)
+    callback_url: Optional[str] = None
+
+
 class EnvironmentTaskResponse(BaseModel):
     """Response for environment task submission"""
     task_id: str
@@ -585,6 +620,50 @@ async def submit_crash_analysis(request: CrashAnalysisRequest):
     )
 
     return await submit_environment_task("crash_analysis", env_request)
+
+
+@app.post("/environments/facts_extraction/tasks", response_model=EnvironmentTaskResponse)
+async def submit_facts_extraction(request: FactsExtractionRequest):
+    """
+    Extract facts and preferences from conversation messages.
+
+    Analyzes AI conversation history to extract:
+    - Facts (personal, technical, business, temporal)
+    - Preferences (communication, technical, work style)
+    - Goals and constraints
+    - User profile summary
+    """
+    # Convert messages to the format expected by the environment
+    messages = [
+        {
+            "role": msg.role,
+            "content": msg.content,
+            "timestamp": msg.timestamp,
+            "metadata": msg.metadata or {},
+        }
+        for msg in request.messages
+    ]
+
+    # Build inputs
+    inputs = {
+        "messages": messages,
+        "context_name": request.context_name or "conversation",
+        "extraction_focus": request.extraction_focus or "general",
+    }
+
+    if request.focus_areas:
+        inputs["focus_areas"] = request.focus_areas
+
+    # Create environment task request
+    env_request = EnvironmentTaskRequest(
+        env_type="facts_extraction",
+        inputs=inputs,
+        additional_prompt=request.additional_instructions,
+        priority=request.priority,
+        callback_url=request.callback_url,
+    )
+
+    return await submit_environment_task("facts_extraction", env_request)
 
 
 @app.get(

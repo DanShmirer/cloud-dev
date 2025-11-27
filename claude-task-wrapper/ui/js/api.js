@@ -192,6 +192,21 @@ export class EnvironmentApi {
     }
 
     /**
+     * Submit facts extraction task
+     */
+    async submitFactsExtraction(data) {
+        return this.client.post('/environments/facts_extraction/tasks', {
+            messages: data.messages,
+            context_name: data.contextName || 'conversation',
+            extraction_focus: data.extractionFocus || 'general',
+            focus_areas: data.focusAreas || null,
+            additional_instructions: data.additionalInstructions || null,
+            priority: data.priority || 5,
+            callback_url: data.callbackUrl || null,
+        });
+    }
+
+    /**
      * Get environment task status
      */
     async getEnvironmentTask(envType, taskId) {

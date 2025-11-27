@@ -285,6 +285,92 @@
                             </div>
                         </div>
 
+                        <!-- Facts Extraction Form (shown when selected) -->
+                        <div class="card" id="factsExtractionForm" hidden>
+                            <div class="card__header">
+                                <h2 class="card__title">Facts & Preferences Extraction</h2>
+                            </div>
+                            <div class="card__body">
+                                <form id="factsForm" class="form">
+                                    <div class="form__group">
+                                        <label class="form__label" for="factsMessages">Conversation Messages (JSON) *</label>
+                                        <textarea
+                                            id="factsMessages"
+                                            class="form__textarea form__textarea--code"
+                                            rows="10"
+                                            placeholder='[{"role": "user", "content": "Hello, I prefer dark mode..."}, {"role": "assistant", "content": "I understand..."}]'
+                                            required
+                                        ></textarea>
+                                        <small class="form__help">JSON array of messages with role (user/assistant/system) and content</small>
+                                    </div>
+                                    <div class="form__row">
+                                        <div class="form__group">
+                                            <label class="form__label" for="factsContextName">Context Name</label>
+                                            <input
+                                                type="text"
+                                                id="factsContextName"
+                                                class="form__input"
+                                                value="conversation"
+                                                placeholder="e.g., user_onboarding"
+                                            >
+                                        </div>
+                                        <div class="form__group">
+                                            <label class="form__label" for="factsFocus">Extraction Focus</label>
+                                            <select id="factsFocus" class="form__select">
+                                                <option value="general">General</option>
+                                                <option value="preferences">Preferences</option>
+                                                <option value="technical">Technical</option>
+                                                <option value="personal">Personal Profile</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="form__group">
+                                        <label class="form__label" for="factsFocusAreas">Focus Areas</label>
+                                        <input
+                                            type="text"
+                                            id="factsFocusAreas"
+                                            class="form__input"
+                                            placeholder="Comma-separated: coding style, preferences, goals"
+                                        >
+                                        <small class="form__help">Specific areas to focus extraction on</small>
+                                    </div>
+                                    <div class="form__group">
+                                        <label class="form__label" for="factsInstructions">Additional Instructions</label>
+                                        <textarea
+                                            id="factsInstructions"
+                                            class="form__textarea"
+                                            rows="2"
+                                            placeholder="Any specific extraction instructions..."
+                                        ></textarea>
+                                    </div>
+                                    <div class="form__row">
+                                        <div class="form__group">
+                                            <label class="form__label" for="factsPriority">Priority</label>
+                                            <select id="factsPriority" class="form__select">
+                                                <option value="1">Low (1)</option>
+                                                <option value="5" selected>Normal (5)</option>
+                                                <option value="10">High (10)</option>
+                                            </select>
+                                        </div>
+                                        <div class="form__group">
+                                            <label class="form__label" for="factsCallback">Callback URL</label>
+                                            <input
+                                                type="url"
+                                                id="factsCallback"
+                                                class="form__input"
+                                                placeholder="https://..."
+                                            >
+                                        </div>
+                                    </div>
+                                    <div class="form__actions">
+                                        <button type="submit" class="btn btn--primary">
+                                            Extract Facts
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
                         <!-- Environment Task List -->
                         <div class="card">
                             <div class="card__header">
